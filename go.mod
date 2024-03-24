@@ -1,4 +1,4 @@
-module github.com/hashicorp/terraform-provider-scaffolding-framework
+module github.com/booya/terraform-provider-openwrt
 
 go 1.21
 
