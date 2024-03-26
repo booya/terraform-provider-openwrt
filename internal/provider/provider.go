@@ -5,10 +5,11 @@ package provider
 
 import (
 	"context"
-	"net/http"
 
+	"github.com/booya/gowrt"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,9 +28,12 @@ type OpenWrtProvider struct {
 	version string
 }
 
-// OpenWrtProviderModel describes the provider data model.
-type OpenWrtProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
+// openWrtProviderModel maps provider schema data to a Go type.
+type openWrtProviderModel struct {
+	Host        types.String `tfsdk:"host"`
+	Username    types.String `tfsdk:"username"`
+	Password    types.String `tfsdk:"password"`
+	InsecureTls types.Bool   `tfsdk:"insecure_tls"`
 }
 
 func (p *OpenWrtProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -40,8 +44,21 @@ func (p *OpenWrtProvider) Metadata(ctx context.Context, req provider.MetadataReq
 func (p *OpenWrtProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
-			"endpoint": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
+			"host": schema.StringAttribute{
+				MarkdownDescription: "Host/ip of your OpenWrt router",
+				Required:            true,
+			},
+			"username": schema.StringAttribute{
+				MarkdownDescription: "Username for login",
+				Required:            true,
+			},
+			"password": schema.StringAttribute{
+				MarkdownDescription: "Password for login",
+				Required:            true,
+				Sensitive:           true,
+			},
+			"insecure_tls": schema.BoolAttribute{
+				MarkdownDescription: "Disable TLS certificate verification for the connection",
 				Optional:            true,
 			},
 		},
@@ -49,19 +66,57 @@ func (p *OpenWrtProvider) Schema(ctx context.Context, req provider.SchemaRequest
 }
 
 func (p *OpenWrtProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var data OpenWrtProviderModel
+	var config openWrtProviderModel
+	diags := req.Config.Get(ctx, &config)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if config.Host.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("host"),
+			"Unknown OpenWrt host",
+			"The provider cannot create the OpenWrt API client as there is an unknown configuration value for the OpenWrt API host. "+
+				"Either target apply the source of the value first, set the value statically in the configuration, or use the OpenWrt_HOST environment variable.",
+		)
+	}
+
+	if config.Username.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("username"),
+			"Unnknown OpenWrt username",
+			"The provider cannot create the OpenWrt API client as there is an unknown configuration value for the OpenWrt API username. "+
+				"Either target apply the source of the value first, set the value statically in the configuration, or use the OpenWrt_USERNAME environment variable.",
+		)
+	}
+
+	if config.Password.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("password"),
+			"Unnknown OpenWrt password",
+			"The provider cannot create the OpenWrt API client as there is an unknown configuration value for the OpenWrt API password. "+
+				"Either target apply the source of the value first, set the value statically in the configuration, or use the OpenWrt_PASSWORD environment variable.",
+		)
+	}
 
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Configuration values are now available.
-	// if data.Endpoint.IsNull() { /* ... */ }
-
-	// Example client configuration for data sources and resources
-	client := http.DefaultClient
+	var clientOpts []gowrt.Option
+	if config.InsecureTls.ValueBool() {
+		clientOpts = append(clientOpts, gowrt.WithInsecureTls())
+	}
+	client := gowrt.New(config.Host.ValueString(), clientOpts...)
+	err := client.Login(config.Username.ValueString(), config.Password.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to login to OpenWrt API: "+err.Error(),
+			"Failed to login to OpenWrt API with the given credentials. Check the host, username and password configuration values.",
+		)
+		return
+	}
 	resp.DataSourceData = client
 	resp.ResourceData = client
 }
@@ -75,6 +130,8 @@ func (p *OpenWrtProvider) Resources(ctx context.Context) []func() resource.Resou
 func (p *OpenWrtProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewExampleDataSource,
+		NewBoardInfoDataSource,
+		NewNetworkInterfaceDataSource,
 	}
 }
 
